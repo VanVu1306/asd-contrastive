@@ -1,0 +1,16 @@
+# Core
+torch>=2.1
+torchvision>=0.16
+numpy
+pyyaml
+scikit-learn
+scipy
+matplotlib
+pillow
+opencv-python
+tqdm
+
+# Optional logging backends (only needed if selected in configs/*.yaml: logging.backend)
+tensorboard
+wandb
+

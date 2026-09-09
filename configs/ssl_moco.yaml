@@ -1,0 +1,54 @@
+# =============================================================================
+# ssl_moco.yaml — Self-Supervised pretraining: MoCo (Momentum Contrast) over
+# temporal-warp / frame-shuffle views. Produces the encoder used later for
+# K-Centroid anomaly scoring (see configs/eval.yaml, mode=anomaly_scoring).
+# =============================================================================
+_base_: "base.yaml"
+
+mode: "ssl_moco"
+experiment_name: "ssl_moco"
+
+data:
+  train_split: "./data/splits/unlabeled_train.txt"   # one clip path per line, no labels needed
+  val_split: null
+  clips_per_video: 12
+  # Caps how many clips from the same source video can land in one batch
+  # (datasets/samplers.VideoDiverseBatchSampler). null = no cap (old
+  # behavior). Set to 1 once clips_per_video > 1, so a batch never contains
+  # two views of the same video for the contrastive loss to "cheat" on via
+  # shared background/appearance.
+  max_per_video_per_batch: 1
+
+moco:
+  feature_dim: 256        # output dim of the query/key ProjectionHead
+  hidden_dim: 512          # ProjectionHead hidden width
+  queue_size: 512          # MoCo memory queue length
+  momentum: 0.999            # key-encoder EMA momentum (m)
+  temperature: 0.07            # InfoNCE temperature (tau)
+
+temporal_transform:
+  speed_warp_rates: [0.8, 1.5]   # x_pos_warp: sampled uniformly from this pair of rates
+  frame_shuffle_ratio: 1.0        # fraction of frame positions permuted for x_neg_shuffle
+
+spatial_transform:
+  random_crop_scale: [0.5, 1.0]
+  color_jitter: 0.4
+  h_flip_prob: 0.5
+  random_erasing_prob: 0.0        # 0.0 = off; turn on (e.g. 0.25-0.5) alongside clips_per_video > 1 as extra decorrelation between same-video clips that still end up sharing a batch
+  random_erasing_scale: [0.02, 0.15]
+
+optim:
+  name: "sgd"
+  lr: 0.02
+  weight_decay: 0.0001
+  momentum: 0.9
+  batch_size: 32          # per-GPU; effective batch = batch_size * world_size
+  epochs: 200
+  warmup_epochs: 5
+  scheduler: "cosine_warmup"
+
+logging:
+  backend: ["console", "tensorboard"]   # any of: console | tensorboard | wandb | csv
+  log_every: 20
+  ckpt_every: 10
+  wandb_project: "video-periodicity-contrastive"

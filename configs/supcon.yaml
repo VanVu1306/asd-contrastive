@@ -1,0 +1,46 @@
+# =============================================================================
+# supcon.yaml — Supervised Contrastive pretraining over labeled clips
+# (1 = ASD/stimming, 0 = non-ASD). Produces an encoder tuned for the
+# Action Classification downstream task (linear probing / fine-tuning).
+# =============================================================================
+_base_: "base.yaml"
+
+mode: "supcon"
+experiment_name: "supcon"
+
+data:
+  train_split: "./data/splits/labeled_train.csv"   # columns: clip_path,video_id,label
+  val_split: "./data/splits/labeled_val.csv"
+  clips_per_video: 12
+
+supcon:
+  feature_dim: 128
+  hidden_dim: 512
+  temperature: 0.1
+  # Positive pairs are any two clips in the mini-batch sharing a label but
+  # drawn from *different* video_id values, to cancel out subject/context
+  # bias (see datasets/supcon_dataset.py: SupConDataset._sample_pair).
+  min_positives_per_class: 2
+
+spatial_transform:
+  random_crop_scale: [0.5, 1.0]
+  color_jitter: 0.4
+  h_flip_prob: 0.5
+  random_erasing_prob: 0.0
+  random_erasing_scale: [0.02, 0.15]
+
+optim:
+  name: "sgd"
+  lr: 0.02
+  weight_decay: 0.0001
+  momentum: 0.9
+  batch_size: 32
+  epochs: 100
+  warmup_epochs: 5
+  scheduler: "cosine_warmup"
+
+logging:
+  backend: ["console", "tensorboard"]
+  log_every: 20
+  ckpt_every: 10
+  wandb_project: "video-periodicity-contrastive"

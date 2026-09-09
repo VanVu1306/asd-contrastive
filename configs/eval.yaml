@@ -1,0 +1,48 @@
+# =============================================================================
+# eval.yaml — drives eval.py in one of two modes (--mode flag overrides
+# eval.mode below):
+#   anomaly_scoring : Stage 2 (centroid mining) + Stage 3 (sliding-window
+#                      distance scoring) of the non-parametric pipeline.
+#   linear_probing  : freeze the encoder, train ClassificationHead only.
+# =============================================================================
+_base_: "base.yaml"
+
+checkpoint_path: "./runs/ssl_moco/ckpt_last.pth"   # anomaly_scoring wants the MoCo (SSL) checkpoint;
+                                                     # point this at ./runs/supcon/ckpt_last.pth instead
+                                                     # for linear_probing off the SupCon encoder.
+
+eval:
+  mode: "anomaly_scoring"    # anomaly_scoring | linear_probing
+
+  # --- shared sliding-window inference settings ---
+  window_stride: 4              # frames between consecutive sliding-window clips
+  batch_size: 16
+
+  # --- anomaly_scoring (Stage 2 + 3) ---
+  centroids:
+    k: 20                        # K in K-Means (10~50 per the design doc)
+    normal_split: "./data/splits/normal_train.txt"   # clips used for centroid mining only
+    kmeans_seed: 42
+    save_path: "./runs/ssl_moco/centroids.pth"
+  test_split: "./data/splits/test.csv"     # columns: clip_path,video_id,frame_labels_path
+  post_process:
+    smoothing: "moving_average"    # moving_average | median | none
+    window: 5
+
+  # --- linear_probing ---
+  linear_probe:
+    train_split: "./data/splits/labeled_train.csv"
+    val_split: "./data/splits/labeled_val.csv"
+    num_classes: 2
+    freeze_backbone: true
+    lr: 0.01
+    epochs: 30
+    batch_size: 64
+
+metrics:
+  frame_level: ["micro_auc_roc", "macro_auc_roc", "eer", "far_ratio"]
+  classification: ["top1", "precision", "recall", "f1"]
+
+visualize:
+  enabled: true
+  out_dir: "./runs/ssl_moco/plots"

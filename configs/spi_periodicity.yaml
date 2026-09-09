@@ -1,0 +1,95 @@
+# =============================================================================
+# spi_periodicity.yaml — Synthetic Periodicity Injection: a third, independent
+# SSL pretext branch (see README's "Nhánh SPI" section). Trains on the SAME
+# kind of unlabeled manifest as ssl_moco.yaml, but the positive/negative
+# structure comes from synthesized periodic clips with a *known* cycle
+# length, not from MoCo's speed-warp/frame-shuffle views.
+#
+# Standalone by default (multi_task.moco_loss_weight: 0.0). Set it > 0 to
+# also train a MoCo/InfoNCE objective on a SHARED backbone in the same step
+# (see trainers/spi_trainer.py) — this does not modify or depend on
+# configs/ssl_moco.yaml in any way; it's a self-contained combined mode.
+# =============================================================================
+_base_: "base.yaml"
+
+mode: "spi_periodicity"
+experiment_name: "spi_periodicity"
+
+data:
+  train_split: "./data/splits/unlabeled_train.txt"   # same manifest format as ssl_moco.yaml — no labels needed
+  val_split: null
+  # Needed to convert spi.cycle_duration_range_sec (real seconds/cycle) into
+  # a frame count — set this to your actual source footage's frame rate.
+  fps: 30.0
+  clips_per_video: 12
+  max_per_video_per_batch: 1
+
+spi:
+  # Realistic stimming cycle duration range, in seconds — converted to a
+  # frame-count range via data.fps. 0.3-2.0s/cycle covers most stereotyped
+  # motor behaviors (rocking, hand-flapping); narrow this if you have
+  # domain-specific priors on the population being studied.
+  cycle_duration_range_sec: [0.3, 2.0]
+  n_repeats_range: [3, 5]          # N: how many times the sampled cycle is repeated per synthesized clip
+  # Mandatory (not optional) per-repeat jitter — see
+  # transforms/temporal_transforms.SyntheticPeriodicityInjection's docstring
+  # for why: without this, the positive pair task degenerates into literal
+  # pixel matching instead of learning to recognize periodicity.
+  speed_jitter: 0.05                # +/- playback-rate jitter, independent per repeat
+  color_jitter_strength: 0.1         # +/- brightness jitter, independent per repeat (shared across that repeat's frames)
+
+  feature_dim: 128
+  hidden_dim: 512
+  temperature: 0.1
+
+  # Auxiliary head predicting log(cycle length) alongside the main
+  # periodic/non-periodic contrastive loss. 0.0 disables it entirely
+  # (PeriodRegressionHead is still built but never trained/used).
+  period_loss_weight: 0.0
+  period_head_hidden_dim: 128
+
+spatial_transform:
+  random_crop_scale: [0.5, 1.0]
+  color_jitter: 0.4
+  h_flip_prob: 0.5
+  random_erasing_prob: 0.0
+  random_erasing_scale: [0.02, 0.15]
+
+# Optional combined-loss mode: trains InfoNCE (MoCo) and SPIConLoss together
+# on ONE shared backbone (trainers/spi_trainer.py). Leave moco_loss_weight at
+# 0.0 to run SPI standalone — the default, and the only mode this config has
+# been end-to-end tested in. The combined mode reuses configs/ssl_moco.yaml's
+# `moco:` block for its MoCo-specific hyperparameters (queue_size, momentum,
+# temperature, feature_dim, hidden_dim) — copy or merge that block in here if
+# you turn moco_loss_weight on and want to change any of them from
+# ssl_moco.yaml's own values.
+multi_task:
+  moco_loss_weight: 0.0
+  spi_loss_weight: 1.0
+
+moco:
+  feature_dim: 256
+  hidden_dim: 512
+  queue_size: 512
+  momentum: 0.999
+  temperature: 0.07
+
+temporal_transform:
+  speed_warp_rates: [0.8, 1.5]     # only used when multi_task.moco_loss_weight > 0
+  frame_shuffle_ratio: 1.0
+
+optim:
+  name: "sgd"
+  lr: 0.02
+  weight_decay: 0.0001
+  momentum: 0.9
+  batch_size: 32
+  epochs: 200
+  warmup_epochs: 5
+  scheduler: "cosine_warmup"
+
+logging:
+  backend: ["console", "tensorboard"]
+  log_every: 20
+  ckpt_every: 5
+  wandb_project: "video-periodicity-contrastive"

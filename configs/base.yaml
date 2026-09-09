@@ -1,0 +1,44 @@
+# =============================================================================
+# base.yaml — settings shared by every run (backbone, input resolution, hardware).
+# ssl_moco.yaml / supcon.yaml / eval.yaml all `_base_: base.yaml` and override
+# only what they need. See utils/config.py for how the merge works.
+# =============================================================================
+
+experiment_name: "video_periodicity_contrastive"
+seed: 42
+output_dir: "./runs"
+
+# ---------------------------------------------------------------------------
+# Backbone: any key registered in models/backbones/builder.py
+#   resnet3d_18 | resnet3d_50 | r2plus1d_18 | s3d | video_swin_t
+# ---------------------------------------------------------------------------
+backbone:
+  name: "resnet3d_18"
+  pretrained: false          # ImageNet/Kinetics init; requires network access to fetch weights
+  pretrained_path: null      # local .pth to load instead of torchvision's remote weights
+  in_channels: 3
+
+# ---------------------------------------------------------------------------
+# Clip geometry — shared by every dataset/model so tensors are always
+# X in R^{B x C x T x H x W}.
+# ---------------------------------------------------------------------------
+data:
+  root: "./data"
+  clip_len: 32           # T
+  raw_clip_len: 64       # T_raw a raw window is sampled from before augmentation
+  frame_size: 112        # H = W. Use 224 for higher-capacity backbones.
+  frame_source: "auto"   # auto | video | frames  (see datasets/base_dataset.py)
+  num_workers: 0
+  pin_memory: true
+
+hardware:
+  device: "cuda"         # falls back to cpu automatically if cuda is unavailable
+  amp: true              # automatic mixed precision
+  ddp: false             # set true (or pass --distributed) for multi-GPU torchrun launches
+  sync_bn: true          # only used when ddp: true
+  # Bit-exact reproducibility on GPU (same seed -> identical run) needs this
+  # on, since cudnn's autotuner/algorithms are otherwise non-deterministic
+  # even with every RNG seeded — but it costs real throughput. Leave false
+  # for normal training; only turn on when you specifically need to compare
+  # two runs bit-for-bit.
+  deterministic: false
