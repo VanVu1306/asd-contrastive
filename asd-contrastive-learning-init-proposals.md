@@ -125,7 +125,7 @@ Trích xuất vector đặc trưng $\mathbf{z} = f(\mathbf{x}) \in \mathbb{R}^D$
 **Yêu cầu**: Không cần nhãn bất thường; khai thác tối đa không gian biểu diễn của Pre-trained MoCo Encoder thông qua Quy trình 3 Giai đoạn (3-Stage Pipeline) để đảm bảo tính gọn nhẹ và suy luận tức thì.
 **Cơ chế**:
 
-* **Stage 1**: MoCo Pre-training (Biểu diễn Đặc trưng)
+* **Stage 1**: Pre-training (SupCon hoặc SSL) (Biểu diễn Đặc trưng)
   * Huấn luyện 3D Backbone Encoder trên tập dữ liệu video không nhãn bằng loss InfoNCE và MoCo Queue ($\mathcal{Q}$)
   * Đầu ra:  Pretrained encoder đã học được tính liên tục và chu kỳ thời gian.
 * **Stage 2**: Centroid Mining (0-Epoch / Single Pass)

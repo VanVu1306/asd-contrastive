@@ -67,11 +67,11 @@ pip install -r requirements.txt
 
 ## Input tensor convention
 
-Every backbone consumes `X ∈ R^{B×C×T×H×W}` — batch, RGB channels, temporal frames, height, width — exactly as specified in the design doc. All datasets and transforms in this repo produce/consume that layout consistently, so swapping a backbone never requires touching the data pipeline.
+Every backbone consumes `X ∈ R^{B×C×T×H×W}` — batch, RGB channels, temporal frames, height, width. All datasets and transforms in this repo produce/consume that layout consistently, so swapping a backbone never requires touching the data pipeline.
 
 ## Data format
 
-Point `data.root` at wherever your clips live, and each split file at a manifest relative to that root:
+Point `data.root` at wherever clips live, and each split file at a manifest relative to that root:
 
 | Use case                         | Manifest format                                                                                                             |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -185,13 +185,7 @@ raw clip (T_raw frames)
    ├── window at repeat-unit phase B -> x_periodic_phaseB -> SpatialAugment_B -> encoder -> z_b  (pseudo-label 1)
    └── plain continuous crop of the SAME raw window -> x_nonperiodic -> SpatialAugment_C -> encoder -> z_np  (pseudo-label 0)
 
-SPIConLoss = SupConLoss(z_a, z_b, z_np; pseudo-labels)   # same mechanism as
-                                                           # supcon_loss.py, but
-                                                           # WITHOUT the cross-
-                                                           # video exclusion —
-                                                           # phaseA/phaseB sharing
-                                                           # a source clip is the
-                                                           # intended positive here
+SPIConLoss = SupConLoss(z_a, z_b, z_np; pseudo-labels)   # same mechanism as supcon_loss.py
                         + period_loss_weight * SmoothL1(log P̂, log L)   # optional, via PeriodRegressionHead
 ```
 

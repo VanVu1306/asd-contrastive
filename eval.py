@@ -78,7 +78,7 @@ def load_backbone_from_checkpoint(backbone_cfg, checkpoint_path: str) -> nn.Modu
     backbone = build_backbone(backbone_cfg)
     state = torch.load(checkpoint_path, map_location="cpu",weights_only=False)["model"]
 
-    for prefix in ("encoder_q.backbone.", "backbone."):
+    for prefix in ("encoder_q.backbone.", "backbone.", "spi.backbone."):
         matched = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
         if matched:
             missing, unexpected = backbone.load_state_dict(matched, strict=False)
@@ -87,7 +87,7 @@ def load_backbone_from_checkpoint(backbone_cfg, checkpoint_path: str) -> nn.Modu
             return backbone
 
     raise ValueError(
-        f"Could not find backbone weights under 'encoder_q.backbone.*' or 'backbone.*' "
+        f"Could not find backbone weights under 'encoder_q.backbone.*', 'backbone.*', or 'spi.backbone.*' "
         f"in {checkpoint_path}; found top-level keys: {sorted(state.keys())[:5]}..."
     )
 

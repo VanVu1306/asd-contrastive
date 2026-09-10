@@ -19,7 +19,7 @@ Used by:
 from __future__ import annotations
 
 import random
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import numpy as np
 
