@@ -45,7 +45,7 @@ spi:
   # Auxiliary head predicting log(cycle length) alongside the main
   # periodic/non-periodic contrastive loss. 0.0 disables it entirely
   # (PeriodRegressionHead is still built but never trained/used).
-  period_loss_weight: 0.0
+  period_loss_weight: 0.5
   period_head_hidden_dim: 128
 
 spatial_transform:
