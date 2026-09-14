@@ -32,11 +32,13 @@ video-periodicity-contrastive/
 ├── models/
 │   ├── backbones/             # resnet3d_18/50, r2plus1d_18, s3d, video_swin_t + builder factory
 │   ├── heads.py               # ProjectionHead, ClassificationHead, PeriodRegressionHead, AnomalyScoringHead
-│   └── moco_wrapper.py        # query/key encoders, momentum update, FIFO memory queue, optional shared backbone
+│   ├── moco_wrapper.py        # query/key encoders, momentum update, FIFO memory queue, optional shared backbone
+│   └── spi_moco_wrapper.py    # MoCo-style memory queue for SPI's own periodic/non-periodic task (spi.training_mode: "queue")
 ├── losses/
 │   ├── supcon_loss.py         # SupCon with a cross-video-only positive mask
 │   ├── moco_nce_loss.py       # InfoNCE over (positive, queue negatives, hard negative)
-│   └── spicon_loss.py         # SupCon-style loss over periodic/non-periodic pseudo-labels + period regression
+│   ├── spicon_loss.py         # SupCon-style loss over periodic/non-periodic pseudo-labels + period regression
+│   └── spi_moco_loss.py       # InfoNCE (via moco_nce_loss) + period regression, for spi.training_mode: "queue"
 ├── trainers/
 │   ├── base_trainer.py        # DDP setup, optimizer/checkpoint/logging/seeding plumbing
 │   ├── ssl_trainer.py         # MoCo training loop
@@ -190,6 +192,8 @@ SPIConLoss = SupConLoss(z_a, z_b, z_np; pseudo-labels)   # same mechanism as sup
 ```
 
 Standalone by default (`python train.py --config configs/spi_periodicity.yaml`) — this is the mode that's been fully end-to-end tested. It can optionally also train a full MoCo/InfoNCE objective on a **shared backbone** in the same step (`multi_task.moco_loss_weight > 0` in `configs/spi_periodicity.yaml`); this combined mode runs and checkpoints correctly (smoke-tested — see `models/moco_wrapper.MoCoWrapper`'s `shared_backbone` parameter) but its joint loss-weighting dynamics haven't been tuned/validated the way the standalone path has, so treat it as an experimental option rather than a validated recipe.
+
+**Negatives source (`spi.training_mode`):** by default (`"in_batch"`), SPIConLoss draws negatives only from whatever's non-periodic in the current mini-batch — this can saturate/collapse early on a small or low-diversity batch, the same failure mode diagnosed for the main MoCo branch. Set `spi.training_mode: "queue"` to instead run the periodic/non-periodic task through  `models/spi_moco_wrapper.SPIMoCoWrapper` — a dedicated MoCo-style momentum encoder + FIFO queue of non-periodic embeddings, accumulated across many past steps rather than limited to the current batch. This is a genuinely different mechanism from the combined mode above: "combined" runs a *separate* MoCo/InfoNCE task alongside SPIConLoss on a shared backbone;  `"queue"` mode replaces SPIConLoss's own negative sampling for the SAME periodic/non periodic task, and is not used together with `multi_task.moco_loss_weight` (ignored when `training_mode: "queue"`). `period_loss_weight` (the auxiliary cycle-length regression term) works identically under either `training_mode`. Verified end-to-end: the queue genuinely accumulates non-periodic embeddings across steps (not just the current batch), gradient reaches `encoder_q` and the period head but never `encoder_k` (momentum-only, as MoCo requires), and neither existing mode's behavior changed by adding this option.
 
 Before trusting SPI's representation for Stage 2 Centroid Mining, validate it the same way as the MoCo branch: run `eval.py --mode linear_probing` against a SPI checkpoint and confirm the learned periodicity axis actually correlates with real ASD/non-ASD labels, since SPI never sees real labels during pretraining.
 

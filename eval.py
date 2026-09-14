@@ -73,12 +73,16 @@ def load_backbone_from_checkpoint(backbone_cfg, checkpoint_path: str) -> nn.Modu
     SupConEncoder.backbone.* (supcon), or SPIEncoder's spi.backbone.*
     (spi_periodicity, standalone mode — combined mode also writes
     moco.encoder_q.backbone.* for the same shared weights, so the "moco."
-    prefix below already covers it too). This strips whichever prefix
+    prefix below already covers it too), or SPIMoCoWrapper's
+    spi_moco.encoder_q.backbone.* (spi_periodicity, queue mode). This strips whichever prefix
     matches instead of assuming one trainer."""
     backbone = build_backbone(backbone_cfg)
     state = torch.load(checkpoint_path, map_location="cpu",weights_only=False)["model"]
 
-    for prefix in ("encoder_q.backbone.", "backbone.", "spi.backbone."):
+    for prefix in (
+        "encoder_q.backbone.", "backbone.", "spi.backbone.",
+        "moco.encoder_q.backbone.", "spi_moco.encoder_q.backbone.",
+    ):
         matched = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
         if matched:
             missing, unexpected = backbone.load_state_dict(matched, strict=False)

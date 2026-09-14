@@ -36,11 +36,28 @@ spi:
   # for why: without this, the positive pair task degenerates into literal
   # pixel matching instead of learning to recognize periodicity.
   speed_jitter: 0.05                # +/- playback-rate jitter, independent per repeat
-  color_jitter_strength: 0.1         # +/- brightness jitter, independent per repeat (shared across that repeat's frames)
+  color_jitter_strength: 0.1        # +/- brightness jitter, independent per repeat (shared across that repeat's frames)
 
   feature_dim: 128
   hidden_dim: 512
   temperature: 0.1
+
+  # How the periodic/non-periodic contrastive task gets its negatives:
+  #   "in_batch" (default) : whatever's non-periodic in the current batch
+  #                           only — the mode most thoroughly tested.
+  #   "queue"               : a persistent MoCo-style FIFO queue of
+  #                           non-periodic embeddings, accumulated across
+  #                           many past steps — more negatives, more
+  #                           diverse, and harder over time, at the cost of
+  #                           a second (momentum) encoder copy. Added to
+  #                           address a specific concern that batch-only
+  #                           negatives risk saturating/collapsing early on
+  #                           a small or low-diversity batch.
+  # multi_task.moco_loss_weight below is ignored when training_mode: "queue"
+  # (see trainers/spi_trainer.py's module docstring for why).
+  training_mode: "in_batch"   # in_batch | queue
+  queue_size: 512          # only used when training_mode: "queue"
+  queue_momentum: 0.999    # only used when training_mode: "queue"
 
   # Auxiliary head predicting log(cycle length) alongside the main
   # periodic/non-periodic contrastive loss. 0.0 disables it entirely
@@ -56,15 +73,20 @@ spatial_transform:
   random_erasing_scale: [0.02, 0.15]
 
 # Optional combined-loss mode: trains InfoNCE (MoCo) and SPIConLoss together
-# on ONE shared backbone (trainers/spi_trainer.py). Leave moco_loss_weight at
-# 0.0 to run SPI standalone — the default, and the only mode this config has
-# been end-to-end tested in. The combined mode reuses configs/ssl_moco.yaml's
-# `moco:` block for its MoCo-specific hyperparameters (queue_size, momentum,
-# temperature, feature_dim, hidden_dim) — copy or merge that block in here if
-# you turn moco_loss_weight on and want to change any of them from
-# ssl_moco.yaml's own values.
+# on ONE shared backbone (trainers/spi_trainer.py). Only applies when
+# spi.training_mode: "in_batch" (the default) — ignored entirely when
+# spi.training_mode: "queue", since that mode already gets its MoCo-style
+# queue directly inside the periodic/non-periodic task itself (see
+# models/spi_moco_wrapper.py) rather than as a second, separate objective.
+# Leave moco_loss_weight at 0.0 to run SPI standalone — the default, and the
+# only mode this config has been end-to-end tested in. The combined mode
+# reuses configs/ssl_moco.yaml's `moco:` block for its MoCo-specific
+# hyperparameters (queue_size, momentum, temperature, feature_dim,
+# hidden_dim) — copy or merge that block in here if you turn
+# moco_loss_weight on and want to change any of them from ssl_moco.yaml's
+# own values.
 multi_task:
-  moco_loss_weight: 0.0
+  moco_loss_weight: 0.5
   spi_loss_weight: 1.0
 
 moco:

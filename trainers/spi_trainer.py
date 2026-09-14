@@ -7,19 +7,38 @@ imported or modified by this file; it only builds on the same shared
 BaseTrainer/model/loss infrastructure every trainer in this repo already
 uses.
 
-Standalone mode (default, multi_task.moco_loss_weight=0):
-    backbone -> spi_projector -> SPIConLoss over (periodic_a, periodic_b,
-    non_periodic) pseudo-labels, optionally + PeriodRegressionHead.
-    This is the mode this trainer has been end-to-end tested in.
+`spi.training_mode` in configs/spi_periodicity.yaml selects between three
+ways to train the SPI task, all independently selectable and none of which
+modifies another's code path:
 
-Combined mode (multi_task.moco_loss_weight > 0):
-    ONE shared backbone (via models.moco_wrapper.MoCoWrapper's
-    `shared_backbone` parameter) feeds both SPIConLoss and a full
-    MoCoWrapper/InfoNCE objective; the two losses are weighted-summed and
-    backpropagated together each step. This mode runs without crashing
-    (smoke-tested) but its joint-optimization dynamics haven't been
-    validated the way the standalone path has — see the README's SPI
-    section for what "tested" means for each mode.
+  "in_batch" (default): backbone -> spi_projector -> SPIConLoss over
+      (periodic_a, periodic_b, non_periodic) pseudo-labels, optionally +
+      PeriodRegressionHead. Negatives = whatever's non-periodic in the
+      current mini-batch only. This is the mode most thoroughly tested.
+
+  "queue": the SAME periodic/non-periodic task, but through
+      models.spi_moco_wrapper.SPIMoCoWrapper — a MoCo-style momentum
+      encoder + persistent FIFO queue of non-periodic embeddings, so
+      negatives accumulate across many past steps instead of being limited
+      to the current batch. Added specifically to address a concern that
+      in-batch-only negatives risk saturating/collapsing early on a small
+      or low-diversity batch. `multi_task.moco_loss_weight` (the combined
+      mode below) is ignored in this mode — it would mean training two
+      independent MoCo-style objectives at once, which isn't what either
+      mode is for.
+
+  combined (`training_mode: "in_batch"` + `multi_task.moco_loss_weight > 0`):
+      ONE shared backbone (via models.moco_wrapper.MoCoWrapper's
+      `shared_backbone` parameter) feeds both SPIConLoss and a full,
+      separate MoCoWrapper/InfoNCE objective; the two losses are
+      weighted-summed and backpropagated together each step. This is a
+      different mechanism from "queue" mode above: here MoCo runs as its
+      own independent task (its own projector, its own queue) alongside
+      SPIConLoss, rather than replacing SPIConLoss's own negative sampling.
+      Runs without crashing (smoke-tested) but its joint-optimization
+      dynamics haven't been validated the way "in_batch" has.
+
+See the README's SPI section for what "tested" means for each mode.
 """
 from __future__ import annotations
 
@@ -32,10 +51,12 @@ from torch.utils.data import DataLoader
 from datasets.samplers import VideoDiverseBatchSampler
 from datasets.spi_dataset import SPIDataset
 from losses.moco_nce_loss import MoCoNCELoss
+from losses.spi_moco_loss import SPIMoCoLoss
 from losses.spicon_loss import SPIConLoss
 from models.backbones.builder import build_backbone
 from models.heads import PeriodRegressionHead, ProjectionHead
 from models.moco_wrapper import MoCoWrapper
+from models.spi_moco_wrapper import SPIMoCoWrapper
 from trainers.base_trainer import BaseTrainer
 from utils.distributed import is_main_process
 from utils.logger import AverageMeter
@@ -107,7 +128,34 @@ class SPITrainer(BaseTrainer):
 
     def build_model_and_loss(self):
         cfg = self.cfg
+        training_mode = cfg["spi"].get("training_mode", "in_batch")
         predict_period = cfg["spi"].get("period_loss_weight", 0.0) > 0
+
+        if training_mode == "queue":
+            # New: MoCo-style persistent queue for this task's own negatives
+            # (see models/spi_moco_wrapper.py). Independent of, and never
+            # combined with, multi_task.moco_loss_weight's separate
+            # combined-mode mechanism below.
+            spi_moco = SPIMoCoWrapper(
+                backbone_cfg=cfg["backbone"], feature_dim=cfg["spi"]["feature_dim"],
+                hidden_dim=cfg["spi"]["hidden_dim"], queue_size=cfg["spi"].get("queue_size", 2048),
+                momentum=cfg["spi"].get("queue_momentum", 0.999),
+            )
+            modules = {"spi_moco": spi_moco}
+            if predict_period:
+                # Standalone head (not inside SPIMoCoWrapper) consuming
+                # encoder_q's exposed backbone features — see
+                # SPIMoCoWrapper.forward's feats_a return value.
+                modules["period_head"] = PeriodRegressionHead(
+                    spi_moco.encoder_q.backbone.out_dim, cfg["spi"].get("period_head_hidden_dim", 128),
+                )
+            model = self.wrap_for_ddp(nn.ModuleDict(modules))
+            criterion = SPIMoCoLoss(
+                temperature=cfg["spi"]["temperature"], period_loss_weight=cfg["spi"].get("period_loss_weight", 0.0),
+            )
+            return model, criterion
+
+        # --- training_mode == "in_batch" (default) ---
         moco_weight = cfg.get("multi_task", {}).get("moco_loss_weight", 0.0)
 
         # Combined mode builds the backbone once, up front, and hands the
@@ -140,13 +188,29 @@ class SPITrainer(BaseTrainer):
         return model, (spicon_criterion, moco_criterion)
 
     def train_step(self, model, criterion, batch):
-        spicon_criterion, moco_criterion = criterion
         cfg = self.cfg
+        training_mode = cfg["spi"].get("training_mode", "in_batch")
         x_periodic_a, x_periodic_b, x_nonperiodic, period_label = (
             t.to(self.device, non_blocking=True) for t in batch
         )
         m = self.unwrap(model)
 
+        if training_mode == "queue":
+            with torch.amp.autocast(self.device.type, enabled=self.amp_enabled):
+                q, k, queue, k_neg, feats_a = m["spi_moco"](x_periodic_a, x_periodic_b, x_nonperiodic)
+        
+                pred_log_period, true_log_period = None, None
+                if "period_head" in m:
+                    pred_log_period = m["period_head"](feats_a)
+                    true_log_period = period_label
+        
+                loss, logs = criterion(q, k, queue, k_neg, pred_log_period, true_log_period)
+        
+            self._last_logs = logs
+            return loss
+
+        # --- training_mode == "in_batch" (default) ---
+        spicon_criterion, moco_criterion = criterion
         with torch.amp.autocast(self.device.type, enabled=self.amp_enabled):
             z_a, log_p_a = m["spi"](x_periodic_a)
             z_b, log_p_b = m["spi"](x_periodic_b)
