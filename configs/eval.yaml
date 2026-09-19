@@ -28,6 +28,18 @@ eval:
   post_process:
     smoothing: "moving_average"    # moving_average | median | none
     window: 5
+  # Per-video score normalization applied BEFORE pooling videos together for
+  # micro_auc_roc (see utils/metrics.normalize_scores for why). Different
+  # videos' raw K-Centroid distances can sit on different baselines/scales
+  # (especially with a small centroid-mining set), which pooled-but-
+  # unnormalized scores let dominate micro-AUC even when every video is
+  # individually well-separated (macro_auc_roc unaffected either way — it's
+  # already per-video). "none" (default) keeps the previous behavior exactly.
+  #   "zscore"     : (x - mean) / std per video — simple, but sensitive to
+  #                   outliers, which a small centroid-mining set is prone to.
+  #   "percentile" : rank-based per video, scaled to [0, 1] — depends only on
+  #                   order, not magnitude, so generally more robust here.
+  score_normalization: "none"
 
   # --- linear_probing ---
   linear_probe:

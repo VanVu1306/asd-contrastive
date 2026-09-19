@@ -18,8 +18,12 @@ Used by:
 """
 from __future__ import annotations
 
+import atexit
+import csv
+import os
 import random
-from typing import Sequence, Tuple
+from collections import Counter
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -147,6 +151,10 @@ class SyntheticPeriodicityInjection:
     frames would let a contrastive loss "solve" the positive-pair task with
     literal pixel matching instead of learning to recognize periodicity —
     exactly the shortcut this pretext task exists to avoid.
+
+    Optional fixed_L / fixed_N values preserve the legacy random defaults
+    when the input is None, and can be used for controlled experiments
+    without modifying the current sampling logic elsewhere.
     """
 
     def __init__(
@@ -155,6 +163,9 @@ class SyntheticPeriodicityInjection:
         n_repeats_range: Tuple[int, int] = (3, 5),
         speed_jitter: float = 0.05,
         color_jitter_strength: float = 0.1,
+        fixed_L: Optional[int] = None,
+        fixed_N: Optional[int] = None,
+        stats_path: Optional[str] = None,
     ):
         if speed_jitter <= 0.0 and color_jitter_strength <= 0.0:
             # The doc is explicit that jitter is mandatory — rather than
@@ -166,13 +177,34 @@ class SyntheticPeriodicityInjection:
         self.speed_jitter = speed_jitter
         self.color_jitter_strength = color_jitter_strength
 
-    def __call__(self, frames: np.ndarray) -> Tuple[np.ndarray, int, int]:
-        """frames: (T_raw, H, W, C) uint8. Returns (periodic_clip, L, N)
-        where periodic_clip has exactly L*N frames."""
-        t_raw = frames.shape[0]
+        # Non-breaking experiment hooks: keep legacy random behavior when
+        # fixed_L/fixed_N are left as None.
+        self.fixed_L = fixed_L
+        self.fixed_N = fixed_N
+
+        # Distribution bookkeeping for L and N sampled over the run.
+        self.l_counts = Counter()
+        self.n_counts = Counter()
+        self.pair_counts = Counter()
+        self.stats_path = stats_path
+
+        if self.stats_path is not None:
+            # Register a write-on-exit hook so the user can inspect the
+            # actual distribution of L/N without having to log every sample.
+            atexit.register(self.dump_stats)
+
+    def sample_periodicity_params(self, t_raw: int) -> Tuple[int, int]:
+        """Choose L and N, with fixed-value override when configured.
+
+        This preserves the original random path by default and only swaps in
+        fixed values when users set `spi.fixed_L` or `spi.fixed_N` in config.
+        """
         lo, hi = self.cycle_len_range
         effective_hi = min(hi, t_raw)
-        if effective_hi < lo:
+
+        if self.fixed_L is not None:
+            L = int(self.fixed_L)
+        elif effective_hi < lo:
             # Raw window shorter than even the minimum configured cycle
             # length — nothing sensible to sample within range; use
             # everything available rather than requesting more frames than
@@ -180,7 +212,67 @@ class SyntheticPeriodicityInjection:
             L = t_raw
         else:
             L = random.randint(lo, effective_hi)
-        N = random.randint(*self.n_repeats_range)
+
+        if self.fixed_N is not None:
+            N = int(self.fixed_N)
+        else:
+            N = random.randint(*self.n_repeats_range)
+
+        return L, N
+
+    def update_stats(self, L: int, N: int) -> None:
+        """Update distribution counters for a sampled L/N pair."""
+        self.l_counts[L] += 1
+        self.n_counts[N] += 1
+        self.pair_counts[(L, N)] += 1
+
+    def dump_stats(self, path: Optional[str] = None) -> None:
+        """Persist sampled L/N distributions in three CSV views:
+            - pair_counts: rows (L, N, count)
+            - L_counts: rows (L, count)
+            - N_counts: rows (N, count)
+
+        If no output path is supplied, use the configured stats_path; if
+        the caller never supplies a path, the method is a no-op.
+        """
+        out_path = path or self.stats_path
+        if out_path is None:
+            return
+
+        base, ext = os.path.splitext(out_path)
+        pair_path = out_path
+        l_path = f"{base}_L{ext}"
+        n_path = f"{base}_N{ext}"
+
+        try:
+            os.makedirs(os.path.dirname(pair_path) or ".", exist_ok=True)
+        except Exception:
+            pass
+
+        with open(pair_path, "w", newline="") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(["L", "N", "count"])
+            for (L, N), count in sorted(self.pair_counts.items()):
+                writer.writerow([L, N, count])
+
+        with open(l_path, "w", newline="") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(["L", "count"])
+            for L, count in sorted(self.l_counts.items()):
+                writer.writerow([L, count])
+
+        with open(n_path, "w", newline="") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(["N", "count"])
+            for N, count in sorted(self.n_counts.items()):
+                writer.writerow([N, count])
+
+    def __call__(self, frames: np.ndarray) -> Tuple[np.ndarray, int, int]:
+        """frames: (T_raw, H, W, C) uint8. Returns (periodic_clip, L, N)
+        where periodic_clip has exactly L*N frames."""
+        t_raw = frames.shape[0]
+        L, N = self.sample_periodicity_params(t_raw)
+        self.update_stats(L, N)
 
         max_start = max(0, t_raw - L)
         start = random.randint(0, max_start)

@@ -111,6 +111,9 @@ class SPITrainer(BaseTrainer):
             random_erasing_prob=cfg["spatial_transform"].get("random_erasing_prob", 0.0),
             random_erasing_scale=cfg["spatial_transform"].get("random_erasing_scale", (0.02, 0.15)),
             clips_per_video=cfg["data"].get("clips_per_video", 1),
+            fixed_L=cfg["spi"].get("fixed_L"),
+            fixed_N=cfg["spi"].get("fixed_N"),
+            stats_path=cfg["spi"].get("stats_path"),
         )
         batch_size = cfg["optim"]["batch_size"]
         max_per_video = cfg["data"].get("max_per_video_per_batch") or batch_size

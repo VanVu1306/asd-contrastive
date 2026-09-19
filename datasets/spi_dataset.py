@@ -71,6 +71,9 @@ class SPIDataset(BaseVideoDataset):
         random_erasing_prob: float = 0.0,
         random_erasing_scale=(0.02, 0.15),
         clips_per_video: int = 1,
+        fixed_L: Optional[int] = None,
+        fixed_N: Optional[int] = None,
+        stats_path: Optional[str] = None,
     ):
         super().__init__(root, split_file, frame_source)
         self.raw_clip_len = raw_clip_len
@@ -85,8 +88,13 @@ class SPIDataset(BaseVideoDataset):
             max(3, round(fps * cycle_duration_range_sec[1])),
         )
         self.spi = SyntheticPeriodicityInjection(
-            cycle_len_range=cycle_len_range, n_repeats_range=n_repeats_range,
-            speed_jitter=speed_jitter, color_jitter_strength=color_jitter_strength,
+            cycle_len_range=cycle_len_range,
+            n_repeats_range=n_repeats_range,
+            speed_jitter=speed_jitter,
+            color_jitter_strength=color_jitter_strength,
+            fixed_L=fixed_L,
+            fixed_N=fixed_N,
+            stats_path=stats_path,
         )
 
         self._window_plans: Optional[List[WindowPlan]] = None

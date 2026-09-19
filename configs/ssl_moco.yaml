@@ -43,7 +43,7 @@ optim:
   weight_decay: 0.0001
   momentum: 0.9
   batch_size: 32          # per-GPU; effective batch = batch_size * world_size
-  epochs: 200
+  epochs: 30
   warmup_epochs: 5
   scheduler: "cosine_warmup"
 

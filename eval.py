@@ -35,7 +35,7 @@ from datasets.supcon_dataset import SupConDataset
 from models.backbones.builder import build_backbone
 from models.heads import CentroidScoringHead, ClassificationHead
 from utils.config import apply_overrides, load_config
-from utils.metrics import classification_metrics, frame_level_metrics
+from utils.metrics import classification_metrics, frame_level_metrics, normalize_scores
 from utils.seed import set_seed, worker_init_fn
 from utils.visualize import plot_roc_curve, plot_score_vs_groundtruth
 
@@ -187,6 +187,7 @@ def run_anomaly_scoring(cfg, device: torch.device):
 
     results = {}
     if all_scores:
+        normalization = cfg["eval"].get("score_normalization", "none")
         scores_cat = np.concatenate(all_scores)
         labels_cat = np.concatenate(all_labels)
         results = frame_level_metrics(
@@ -195,10 +196,20 @@ def run_anomaly_scoring(cfg, device: torch.device):
             cfg["metrics"]["frame_level"],
             scores_by_video=all_scores,
             labels_by_video=all_labels,
+            normalization=normalization,
         )
-        print(f"[eval] frame-level metrics over {len(all_scores)} videos: {results}")
-        if viz_cfg.get("enabled", False) and len(np.unique(labels_cat)) > 1:
-            plot_roc_curve(scores_cat, labels_cat, viz_cfg["out_dir"])
+        print(f"[eval] frame-level metrics over {len(all_scores)} videos"
+              f"(score_normalization={normalization}): {results}")
+        
+        if viz_cfg.get("enabled", False):
+            labels_cat = np.concatenate(all_labels)
+            if len(np.unique(labels_cat)) > 1:
+                # Plot whatever actually feeds micro_auc_roc above, so the
+                # curve matches the reported number — pre-normalization raw
+                # scores would show a different (and, when normalization
+                # helped, misleadingly worse) curve than what was reported.
+                plotted_scores = np.concatenate([normalize_scores(s, normalization) for s in all_scores])
+            plot_roc_curve(plotted_scores, labels_cat, viz_cfg["out_dir"])
     else:
         print("[eval] no frame_labels_path found in test_split — skipping metrics (scores/plots still saved).")
 

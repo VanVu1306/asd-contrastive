@@ -31,6 +31,9 @@ spi:
   # domain-specific priors on the population being studied.
   cycle_duration_range_sec: [0.3, 2.0]
   n_repeats_range: [3, 5]          # N: how many times the sampled cycle is repeated per synthesized clip
+  fixed_L: null                     # optional fixed cycle length L, keep null to retain random sampling
+  fixed_N: null                     # optional fixed repeat count N, keep null to retain random sampling
+  stats_path: "./logs/spi_ln_stats.csv"                  # optional CSV file path for aggregate L/N distribution logs; null disables it
   # Mandatory (not optional) per-repeat jitter — see
   # transforms/temporal_transforms.SyntheticPeriodicityInjection's docstring
   # for why: without this, the positive pair task degenerates into literal
@@ -106,7 +109,7 @@ optim:
   weight_decay: 0.0001
   momentum: 0.9
   batch_size: 32
-  epochs: 200
+  epochs: 30
   warmup_epochs: 5
   scheduler: "cosine_warmup"
 
