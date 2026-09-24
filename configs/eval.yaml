@@ -20,10 +20,34 @@ eval:
 
   # --- anomaly_scoring (Stage 2 + 3) ---
   centroids:
+    method: "kmeans"             # "kmeans" (K-Centroids, original design) | "gmm" (Gaussian Mixture, diagonal covariance)
     k: 20                        # K in K-Means (10~50 per the design doc)
     normal_split: "./data/splits/normal_train.txt"   # clips used for centroid mining only
     kmeans_seed: 42
     save_path: "./runs/ssl_moco/centroids.pth"
+
+    # GMM-only settings (ignored when method: "kmeans"). See
+    # models/heads.GMMScoringHead's docstring for the full rationale behind
+    # each mode, and in particular why "entropy" alone can be misleading for
+    # far-outliers (rank a genuine anomaly BELOW a normal clip) — "nll" or
+    # "combined" are the safer default choices.
+    gmm_mode: "nll"                       # "nll" | "entropy" | "combined"
+    gmm_combined_weights: [0.5, 0.5]      # [nll_weight, entropy_weight], "combined" mode only
+    gmm_entropy_temperature: 5.0          # softmax temperature over component responsibilities; only affects "entropy"/"combined"
+
+    # K selection: "fixed" (use k above, as before) | "bic" (search
+    # k_search_range via BIC over a GMM fit — see utils/model_selection.py;
+    # used to pick K regardless of whether method above is "kmeans" or
+    # "gmm", since BIC has no K-Means-native equivalent — a disclosed
+    # approximation, not a claim K-Means itself optimizes BIC).
+    # Empirically ~0.1-1s for a full sweep at the dataset sizes this project
+    # has used so far (tens to ~100 clips) — cheap enough to run inline and
+    # automatically swap in the result, which is what "bic" does below the
+    # bic_time_budget_sec safety net. 
+    k_selection: "fixed"                     # "fixed" | "bic"
+    k_search_range: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40]
+    bic_time_budget_sec: 60.0
+
   test_split: "./data/splits/test.csv"     # columns: clip_path,video_id,frame_labels_path
   post_process:
     smoothing: "moving_average"    # moving_average | median | none
