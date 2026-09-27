@@ -18,9 +18,18 @@ Each sample returns 4 items:
     x_nonperiodic                         : a plain, continuous T-frame crop
         of the same raw window, no SPI applied — the negative pair partner
         (periodic vs non-periodic).
-    period_label                          : log(L) — L = the synthesized
-        cycle length in frames — ground truth for the optional
-        PeriodRegressionHead auxiliary loss.
+    period_label                          : log(effective_period) — see
+        transforms.temporal_transforms.SyntheticPeriodicityInjection
+        .effective_period(): the base-segment length L itself for
+        `repeat_mode: "straight"`, or 2L for `repeat_mode: "symmetric"`
+        (a full back-and-forth oscillation spans two base segments) —
+        ground truth for the optional PeriodRegressionHead auxiliary loss.
+
+`repeat_mode` ("straight" default | "symmetric") selects how the periodic
+content is built — see SyntheticPeriodicityInjection's own docstring for
+the motivation (symmetric/"boomerang" repetition avoids the artificial
+boundary-jump straight repetition creates at every cycle join, and matches
+real oscillatory stimming motion — rocking, hand-flapping — more directly).
 
 `clips_per_video` (default 1) works exactly as in SSLDataset — see
 datasets/multi_window.py.
@@ -65,6 +74,7 @@ class SPIDataset(BaseVideoDataset):
         n_repeats_range: Tuple[int, int] = (3, 5),
         speed_jitter: float = 0.05,
         color_jitter_strength: float = 0.1,
+        repeat_mode: str = "straight",
         random_crop_scale=(0.5, 1.0),
         color_jitter: float = 0.4,
         h_flip_prob: float = 0.5,
@@ -95,6 +105,7 @@ class SPIDataset(BaseVideoDataset):
             fixed_L=fixed_L,
             fixed_N=fixed_N,
             stats_path=stats_path,
+            repeat_mode=repeat_mode,
         )
 
         self._window_plans: Optional[List[WindowPlan]] = None
@@ -188,5 +199,5 @@ class SPIDataset(BaseVideoDataset):
         x_periodic_b = self.spatial_aug_b(frames_to_float_tensor(phase_b_np))
         x_nonperiodic = self.spatial_aug_c(frames_to_float_tensor(nonperiodic_np))
 
-        period_label = torch.tensor(math.log(max(L, 1)), dtype=torch.float32)
+        period_label = torch.tensor(math.log(max(self.spi.effective_period(L), 1)), dtype=torch.float32)
         return x_periodic_a, x_periodic_b, x_nonperiodic, period_label

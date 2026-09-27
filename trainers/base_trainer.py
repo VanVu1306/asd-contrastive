@@ -24,6 +24,7 @@ from utils.logger import MetricLogger
 from utils.lr_scheduler import build_scheduler, set_lr
 from utils.seed import set_seed
 
+
 class BaseTrainer:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -65,6 +66,8 @@ class BaseTrainer:
         self.global_step = 0
         self.start_epoch = 0
         self.resume_path = None  # set from train.py's --resume before .train() runs
+        self.accumulation_steps = int(self.cfg.get("optim", {}).get("accumulation_steps", 1))
+        self._accumulation_counter = 0
 
     # ---- to be implemented by subclasses -----------------------------------
     def build_dataloader(self):
@@ -132,17 +135,35 @@ class BaseTrainer:
         return state.get("epoch", 0)
 
     def run_optimizer_step(self, optimizer: torch.optim.Optimizer, loss: torch.Tensor, scheduler=None) -> None:
-        if scheduler is not None:
-            set_lr(optimizer, scheduler(self.global_step))
-        optimizer.zero_grad(set_to_none=True)
+        if self._accumulation_counter == 0:
+            optimizer.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                set_lr(optimizer, scheduler(self.global_step))
+
+        scaled_loss = loss / self.accumulation_steps
         if self.amp_enabled:
-            self.scaler.scale(loss).backward()
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
+
+        self._accumulation_counter += 1
+        if self._accumulation_counter >= self.accumulation_steps:
+            self._optimizer_step(optimizer)
+            self._accumulation_counter = 0
+
+    def _optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
+        if self.amp_enabled:
             self.scaler.step(optimizer)
             self.scaler.update()
         else:
-            loss.backward()
             optimizer.step()
         self.global_step += 1
+
+    def flush_accumulation(self, optimizer: torch.optim.Optimizer) -> None:
+        if self._accumulation_counter == 0:
+            return
+        self._optimizer_step(optimizer)
+        self._accumulation_counter = 0
 
     def make_scheduler(self, optimizer, steps_per_epoch: int):
         return build_scheduler(self.cfg["optim"], steps_per_epoch)

@@ -55,7 +55,7 @@ video-periodicity-contrastive/
 │   └── visualize.py           # anomaly-score-vs-ground-truth and ROC plots
 ├── scripts/
 │   └── make_dummy_data.py     # generates a synthetic dataset for smoke-testing the whole pipeline
-│   └── select_k_bic.py                  # standalone, unbounded BIC K-search (manual fallback for eval.py's time-boxed inline sweep)
+│   └── select_k_bic.py        # standalone, unbounded BIC K-search (manual fallback for eval.py's time-boxed inline sweep)
 ├── eval.py                    # evaluation entry point (anomaly_scoring | linear_probing)
 ├── train.py                   # training entry point (ssl_moco | supcon | spi_periodicity)
 └── requirements.txt
@@ -199,8 +199,20 @@ A third, independent SSL pretext branch. Instead of relying on a real periodic a
 ```
 raw clip (T_raw frames)
    └── cut a short L-frame segment, repeat it N times (N>=3),
-       each repeat independently speed-/color-jittered (mandatory, not optional — see SyntheticPeriodicityInjection's docstring for why)
-       -> synthetic periodic_clip, L*N frames, true period = L
+       "straight" (default): A -> A -> A -> ... — each repeat independently
+                               speed-/color-jittered (mandatory, not optional —
+                               see SyntheticPeriodicityInjection's docstring for why)
+       "symmetric"           : A -> A_reversed -> A -> ... (boomerang) — motion
+                               stays continuous across every join instead of
+                               "straight"'s artificial jump back to frame 0 at
+                               every join (verified: every step is exactly one
+                               source-frame apart when jitter is off), and
+                               matches real oscillatory stimming motion
+                               (rocking, hand-flapping) more directly; each
+                               half-cycle segment jittered independently too
+       -> synthetic periodic_clip, L*N frames, true period = effective_period(L)
+          = L ("straight") or 2L ("symmetric" — a full out-and-back oscillation
+          spans two base segments)
 
    ├── window at repeat-unit phase A -> x_periodic_phaseA -> SpatialAugment_A -> encoder -> z_a  (pseudo-label 1)
    ├── window at repeat-unit phase B -> x_periodic_phaseB -> SpatialAugment_B -> encoder -> z_b  (pseudo-label 1)

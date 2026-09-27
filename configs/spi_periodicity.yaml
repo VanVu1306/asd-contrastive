@@ -16,7 +16,7 @@ mode: "spi_periodicity"
 experiment_name: "spi_periodicity"
 
 data:
-  train_split: "./data/splits/unlabeled_train.txt"   # same manifest format as ssl_moco.yaml — no labels needed
+  train_split: "./data/ssbd/splits/normal_train.txt"   # same manifest format as ssl_moco.yaml — no labels needed + normal data only
   val_split: null
   # Needed to convert spi.cycle_duration_range_sec (real seconds/cycle) into
   # a frame count — set this to your actual source footage's frame rate.
@@ -34,6 +34,27 @@ spi:
   fixed_L: null                     # optional fixed cycle length L, keep null to retain random sampling
   fixed_N: null                     # optional fixed repeat count N, keep null to retain random sampling
   stats_path: "./logs/spi_ln_stats.csv"                  # optional CSV file path for aggregate L/N distribution logs; null disables it
+
+  # How the periodic content is built (transforms/temporal_transforms.
+  # SyntheticPeriodicityInjection):
+  #   "straight"  (default) : cut a segment, repeat it forward N times
+  #                            (A -> A -> A -> ...). Simple, but creates an
+  #                            artificial "boundary jump" back to the
+  #                            segment's first frame at every join — a
+  #                            regular, learnable shortcut signal that isn't
+  #                            real periodicity, and physically unlike real
+  #                            oscillatory stimming motion.
+  #   "symmetric"             : boomerang repetition (A -> A_reversed ->
+  #                            A -> ...) — motion stays continuous across
+  #                            every join (verified: every frame-to-frame
+  #                            step is a single source-frame step, never a
+  #                            jump, when jitter is disabled) and matches
+  #                            real back-and-forth oscillation directly.
+  #                            Its true period is a full out-and-back cycle
+  #                            (2L, not L) — see effective_period() and the
+  #                            period_label note in datasets/spi_dataset.py.
+  repeat_mode: "straight"
+
   # Mandatory (not optional) per-repeat jitter — see
   # transforms/temporal_transforms.SyntheticPeriodicityInjection's docstring
   # for why: without this, the positive pair task degenerates into literal
@@ -109,6 +130,7 @@ optim:
   weight_decay: 0.0001
   momentum: 0.9
   batch_size: 32
+  accumulation_steps: 2
   epochs: 30
   warmup_epochs: 5
   scheduler: "cosine_warmup"

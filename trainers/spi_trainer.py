@@ -105,6 +105,7 @@ class SPITrainer(BaseTrainer):
             n_repeats_range=cfg["spi"]["n_repeats_range"],
             speed_jitter=cfg["spi"].get("speed_jitter", 0.05),
             color_jitter_strength=cfg["spi"].get("color_jitter_strength", 0.1),
+            repeat_mode=cfg["spi"].get("repeat_mode", "straight"),
             random_crop_scale=cfg["spatial_transform"]["random_crop_scale"],
             color_jitter=cfg["spatial_transform"].get("color_jitter", 0.4),
             h_flip_prob=cfg["spatial_transform"].get("h_flip_prob", 0.5),
@@ -279,6 +280,7 @@ class SPITrainer(BaseTrainer):
                     metrics.update(getattr(self, "_last_logs", {}))
                     self.logger.log(metrics, step=self.global_step)
 
+            self.flush_accumulation(optimizer)
             if is_main_process():
                 print(f"[spi] epoch {epoch} done in {time.time() - t0:.1f}s, avg_loss={loss_meter.avg:.4f}")
             if (epoch + 1) % ckpt_every == 0 or epoch == epochs - 1:

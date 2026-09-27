@@ -11,13 +11,13 @@ import time
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-from datasets.samplers import VideoDiverseBatchSampler
 from datasets.ssl_dataset import SSLDataset
 from losses.moco_nce_loss import MoCoNCELoss
 from models.moco_wrapper import MoCoWrapper
 from trainers.base_trainer import BaseTrainer
-from utils.distributed import is_main_process
+from utils.distributed import is_dist_avail_and_initialized, is_main_process
 from utils.logger import AverageMeter
 from utils.seed import worker_init_fn
 
@@ -37,28 +37,19 @@ class SSLTrainer(BaseTrainer):
             random_crop_scale=cfg["spatial_transform"]["random_crop_scale"],
             color_jitter=cfg["spatial_transform"].get("color_jitter", 0.4),
             h_flip_prob=cfg["spatial_transform"].get("h_flip_prob", 0.5),
-            random_erasing_prob=cfg["spatial_transform"].get("random_erasing_prob", 0.0),
-            random_erasing_scale=cfg["spatial_transform"].get("random_erasing_scale", (0.02, 0.15)),
-            clips_per_video=cfg["data"].get("clips_per_video", 1),
         )
-        batch_size = cfg["optim"]["batch_size"]
-        # max_per_video_per_batch=None (default) -> no cap, i.e. identical to
-        # the plain-shuffle behavior this replaces when clips_per_video=1.
-        # DDP rank-sharding lives inside the sampler itself (see
-        # datasets/samplers.py), so no separate DistributedSampler is used.
-        max_per_video = cfg["data"].get("max_per_video_per_batch") or batch_size
-        batch_sampler = VideoDiverseBatchSampler(
-            video_index=dataset.video_index, batch_size=batch_size,
-            max_per_video=max_per_video, drop_last=True, seed=self.seed,
-        )
+        sampler = DistributedSampler(dataset) if is_dist_avail_and_initialized() else None
         loader = DataLoader(
             dataset,
-            batch_sampler=batch_sampler,
+            batch_size=cfg["optim"]["batch_size"],
+            shuffle=(sampler is None),
+            sampler=sampler,
             num_workers=cfg["data"].get("num_workers", 4),
             pin_memory=cfg["data"].get("pin_memory", True),
+            drop_last=True,  # MoCo's queue update assumes a consistent batch size
             worker_init_fn=worker_init_fn,
         )
-        return loader, batch_sampler
+        return loader, sampler
 
     def build_model_and_loss(self):
         model = MoCoWrapper(
@@ -81,7 +72,7 @@ class SSLTrainer(BaseTrainer):
 
     def train(self):
         cfg = self.cfg
-        loader, batch_sampler = self.build_dataloader()
+        loader, sampler = self.build_dataloader()
         model, criterion = self.build_model_and_loss()
         # Only encoder_q is trained by gradient descent; encoder_k only ever
         # moves via the EMA update inside MoCoWrapper._momentum_update_key_encoder.
@@ -94,7 +85,8 @@ class SSLTrainer(BaseTrainer):
         ckpt_every = cfg["logging"].get("ckpt_every", 5)
 
         for epoch in range(self.start_epoch, epochs):
-            batch_sampler.set_epoch(epoch)  # keeps all DDP ranks' shuffles in sync
+            if sampler is not None:
+                sampler.set_epoch(epoch)
             model.train()
             loss_meter = AverageMeter()
             t0 = time.time()
@@ -110,6 +102,7 @@ class SSLTrainer(BaseTrainer):
                         step=self.global_step,
                     )
 
+            self.flush_accumulation(optimizer)
             if is_main_process():
                 print(f"[ssl] epoch {epoch} done in {time.time() - t0:.1f}s, avg_loss={loss_meter.avg:.4f}")
             if (epoch + 1) % ckpt_every == 0 or epoch == epochs - 1:

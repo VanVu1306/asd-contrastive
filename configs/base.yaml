@@ -23,7 +23,7 @@ backbone:
 # X in R^{B x C x T x H x W}.
 # ---------------------------------------------------------------------------
 data:
-  root: "./data"
+  root: "./data/ssbd"
   clip_len: 32           # T
   raw_clip_len: 64       # T_raw a raw window is sampled from before augmentation
   frame_size: 112        # H = W. Use 224 for higher-capacity backbones.

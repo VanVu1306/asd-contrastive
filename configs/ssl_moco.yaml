@@ -9,7 +9,7 @@ mode: "ssl_moco"
 experiment_name: "ssl_moco"
 
 data:
-  train_split: "./data/splits/unlabeled_train.txt"   # one clip path per line, no labels needed
+  train_split: "./data/ssbd/splits/unlabeled_train.txt"   # one clip path per line, no labels needed
   val_split: null
   clips_per_video: 12
   # Caps how many clips from the same source video can land in one batch
@@ -43,6 +43,7 @@ optim:
   weight_decay: 0.0001
   momentum: 0.9
   batch_size: 32          # per-GPU; effective batch = batch_size * world_size
+  accumulation_steps: 2    # reduce per-step memory; effective batch = batch_size * accumulation_steps * world_size
   epochs: 30
   warmup_epochs: 5
   scheduler: "cosine_warmup"

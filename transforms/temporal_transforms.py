@@ -147,6 +147,25 @@ class SyntheticPeriodicityInjection:
     free pseudo-label (P = L). Positive/negative pairing happens one layer
     up, in datasets/spi_dataset.py.
 
+    Two ways to build the repeating content (`repeat_mode`):
+    
+          "straight" (default) : cut a segment of `L` frames, repeat it `N`
+              times back-to-back (A -> A -> A -> ...). Simple, but has two
+              issues a real oscillatory behavior (rocking, hand-flapping,
+              head-shaking) doesn't: (1) an instantaneous "boundary jump" back
+              to the segment's first frame at every join — a regular,
+              artificial optical-flow spike every L frames that a model can
+              learn to detect as a shortcut instead of learning real
+              periodicity, and (2) physically, real stimming motion is
+              back-and-forth (oscillatory), not "repeat forward then snap back".
+    
+          "symmetric" : boomerang construction (A -> A_reversed -> A -> ...),
+              motion stays continuous across every join (the last frame of one
+              segment and the first frame of the next always differ by exactly
+              one source-frame step, never a jump), and it matches real
+              oscillatory motion directly. See _build_symmetric for the frame
+              bookkeeping that avoids duplicating the boundary frame.
+
     Jitter every repeat is mandatory, not optional: identical repeated
     frames would let a contrastive loss "solve" the positive-pair task with
     literal pixel matching instead of learning to recognize periodicity —
@@ -163,6 +182,7 @@ class SyntheticPeriodicityInjection:
         n_repeats_range: Tuple[int, int] = (3, 5),
         speed_jitter: float = 0.05,
         color_jitter_strength: float = 0.1,
+        repeat_mode: str = "straight",
         fixed_L: Optional[int] = None,
         fixed_N: Optional[int] = None,
         stats_path: Optional[str] = None,
@@ -172,10 +192,13 @@ class SyntheticPeriodicityInjection:
             # silently degrading into the degenerate case, fall back to a
             # small default so every repeat is still guaranteed distinct.
             color_jitter_strength = 0.02
+        if repeat_mode not in ("straight", "symmetric"):
+            raise ValueError(f"Unknown repeat_mode '{repeat_mode}' (use 'straight' or 'symmetric').")
         self.cycle_len_range = (max(2, cycle_len_range[0]), max(3, cycle_len_range[1]))
         self.n_repeats_range = (max(1, n_repeats_range[0]), max(n_repeats_range[0], n_repeats_range[1]))
         self.speed_jitter = speed_jitter
         self.color_jitter_strength = color_jitter_strength
+        self.repeat_mode = repeat_mode
 
         # Non-breaking experiment hooks: keep legacy random behavior when
         # fixed_L/fixed_N are left as None.
@@ -193,12 +216,98 @@ class SyntheticPeriodicityInjection:
             # actual distribution of L/N without having to log every sample.
             atexit.register(self.dump_stats)
 
-    def sample_periodicity_params(self, t_raw: int) -> Tuple[int, int]:
-        """Choose L and N, with fixed-value override when configured.
+    def effective_period(self, L: int) -> int:
+        """The oscillation period (in frames) to use as the ground-truth
+        regression target for PeriodRegressionHead — not always the same as
+        the base-segment length L (which datasets/spi_dataset.py also uses
+        separately, for repeat-unit indexing when picking two clip phases).
+    
+        "straight": one repeat IS one period -> L.
+        "symmetric": a full back-and-forth oscillation (out and back) spans
+        two base-segment lengths -> 2L. (The true steady-state cycle after
+        the boundary-frame de-duplication in _build_symmetric is 2L-2, not
+        exactly 2L — a small, accepted simplification for a regression
+        target, not a claim of exactness.)
+        """
+        return L if self.repeat_mode == "straight" else 2 * L
+    
+    def _jitter_segment(self, segment: np.ndarray) -> np.ndarray:
+        """Independent speed + color jitter for ONE appended segment —
+        shared by both repeat_mode builders so "mandatory jitter" is
+        enforced identically either way."""
+        rep = segment
+        seg_len = segment.shape[0]
+        if self.speed_jitter > 0:
+            # Resample this segment's own frames at a slightly different
+            # rate, so consecutive appearances are never frame-for-frame
+            # identical.
+            rate = 1.0 + random.uniform(-self.speed_jitter, self.speed_jitter)
+            idx = np.clip((np.arange(seg_len) * rate).astype(np.int64), 0, seg_len - 1)
+            rep = rep[idx]
+        if self.color_jitter_strength > 0:
+            # One shared brightness factor per segment (not per frame) —
+            # this is what breaks pixel-identical repeats while keeping
+            # every frame *within* a segment internally consistent.
+            factor = 1.0 + random.uniform(-self.color_jitter_strength, self.color_jitter_strength)
+            rep = np.clip(rep.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+        return rep
+    
+    def _build_straight(self, base_segment: np.ndarray, L: int, N: int) -> np.ndarray:
+        repeats = [self._jitter_segment(base_segment) for _ in range(N)]
+        return np.concatenate(repeats, axis=0)  # (L * N, H, W, C)
+    
+    def _build_symmetric(self, base_segment: np.ndarray, L: int, N: int) -> np.ndarray:
+        """Boomerang construction: base_segment = [a0, a1, ..., a_{L-1}].
+        Appends alternating forward/backward passes, each one frame away
+        from the previous segment's last frame (never a jump), and never
+        duplicating the shared boundary frame between two segments:
+    
+            a0..a_{L-1}, a_{L-2}..a0, a1..a_{L-1}, a_{L-2}..a0, ...
+             (L frames)   (L-1 frames)  (L-1 frames)  (L-1 frames)
+    
+        Builds up to at least L*N frames (this function's own length
+        budget, kept equal to "straight" mode's L*N so the rest of the
+        pipeline — which assumes periodic_clip.shape[0] == L*N — doesn't
+        need to know which mode produced the clip), then truncates to
+        exactly that length.
+        """
+        target_total_len = L * N
+        if L < 2:
+            # Nothing to meaningfully reverse in a 1-frame segment.
+            return self._build_straight(base_segment, L, N)
+    
+        reversed_tail = base_segment[::-1][1:]  # [a_{L-2}, ..., a0] — drops the shared boundary frame a_{L-1}
+    
+        segments = []
+        current_len = 0
+        is_forward = True
+        first = True
+        while current_len < target_total_len:
+            if is_forward:
+                seg = base_segment if first else base_segment[1:]
+            else:
+                seg = reversed_tail
+            seg = self._jitter_segment(seg)
+            segments.append(seg)
+            current_len += seg.shape[0]
+            is_forward = not is_forward
+            first = False
+    
+        return np.concatenate(segments, axis=0)[:target_total_len]
+
+    def __call__ (self, frames: np.ndarray) -> Tuple[np.ndarray, int, int]:
+        """frames: (T_raw, H, W, C) uint8. Returns (periodic_clip, L, N)
+        where periodic_clip has exactly L*N frames. L is the base-segment
+        length used for repeat-unit indexing elsewhere — for the actual
+        oscillation period to use as a regression target, see
+        effective_period(L) above.
+        
+        Choose L and N, with fixed-value override when configured.
 
         This preserves the original random path by default and only swaps in
         fixed values when users set `spi.fixed_L` or `spi.fixed_N` in config.
         """
+        t_raw = frames.shape[0]
         lo, hi = self.cycle_len_range
         effective_hi = min(hi, t_raw)
 
@@ -218,7 +327,15 @@ class SyntheticPeriodicityInjection:
         else:
             N = random.randint(*self.n_repeats_range)
 
-        return L, N
+        max_start = max(0, t_raw - L)
+        start = random.randint(0, max_start)
+        base_segment = frames[start : start + L]
+        
+        if self.repeat_mode == "straight":
+            periodic_clip = self._build_straight(base_segment, L, N)
+        else:
+            periodic_clip = self._build_symmetric(base_segment, L, N)
+        return periodic_clip, L, N
 
     def update_stats(self, L: int, N: int) -> None:
         """Update distribution counters for a sampled L/N pair."""
@@ -266,36 +383,3 @@ class SyntheticPeriodicityInjection:
             writer.writerow(["N", "count"])
             for N, count in sorted(self.n_counts.items()):
                 writer.writerow([N, count])
-
-    def __call__(self, frames: np.ndarray) -> Tuple[np.ndarray, int, int]:
-        """frames: (T_raw, H, W, C) uint8. Returns (periodic_clip, L, N)
-        where periodic_clip has exactly L*N frames."""
-        t_raw = frames.shape[0]
-        L, N = self.sample_periodicity_params(t_raw)
-        self.update_stats(L, N)
-
-        max_start = max(0, t_raw - L)
-        start = random.randint(0, max_start)
-        base_segment = frames[start : start + L]
-
-        repeats = []
-        for _ in range(N):
-            rep = base_segment
-            if self.speed_jitter > 0:
-                # Independent per-repeat playback-rate jitter: resample this
-                # repeat's L frames from the base segment at a slightly
-                # different rate, so consecutive cycles are never
-                # frame-for-frame identical.
-                rate = 1.0 + random.uniform(-self.speed_jitter, self.speed_jitter)
-                idx = np.clip((np.arange(L) * rate).astype(np.int64), 0, L - 1)
-                rep = rep[idx]
-            if self.color_jitter_strength > 0:
-                # One shared brightness factor per repeat (not per frame) —
-                # this is what breaks pixel-identical cycles while keeping
-                # every frame *within* a repeat internally consistent.
-                factor = 1.0 + random.uniform(-self.color_jitter_strength, self.color_jitter_strength)
-                rep = np.clip(rep.astype(np.float32) * factor, 0, 255).astype(np.uint8)
-            repeats.append(rep)
-
-        periodic_clip = np.concatenate(repeats, axis=0)  # (L * N, H, W, C)
-        return periodic_clip, L, N

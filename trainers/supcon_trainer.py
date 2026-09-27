@@ -49,9 +49,6 @@ class SupConTrainer(BaseTrainer):
             random_crop_scale=cfg["spatial_transform"]["random_crop_scale"],
             color_jitter=cfg["spatial_transform"].get("color_jitter", 0.4),
             h_flip_prob=cfg["spatial_transform"].get("h_flip_prob", 0.5),
-            random_erasing_prob=cfg["spatial_transform"].get("random_erasing_prob", 0.0),
-            random_erasing_scale=cfg["spatial_transform"].get("random_erasing_scale", (0.02, 0.15)),
-            clips_per_video=cfg["data"].get("clips_per_video", 1),
             train=True,
         )
         batch_sampler = GroupBalancedBatchSampler(
@@ -59,7 +56,6 @@ class SupConTrainer(BaseTrainer):
             labels=dataset.labels,
             batch_size=cfg["optim"]["batch_size"],
             min_positives_per_class=cfg["supcon"].get("min_positives_per_class", 2),
-            seed=self.seed,
         )
         loader = DataLoader(
             dataset,
@@ -68,7 +64,7 @@ class SupConTrainer(BaseTrainer):
             pin_memory=cfg["data"].get("pin_memory", True),
             worker_init_fn=worker_init_fn,
         )
-        return loader, batch_sampler
+        return loader
 
     def build_model_and_loss(self):
         model = SupConEncoder(
@@ -89,7 +85,7 @@ class SupConTrainer(BaseTrainer):
 
     def train(self):
         cfg = self.cfg
-        loader, batch_sampler = self.build_dataloader()
+        loader = self.build_dataloader()
         model, criterion = self.build_model_and_loss()
         optimizer = self.build_optimizer(model.parameters())
         self.maybe_resume(model, optimizer)
@@ -100,7 +96,6 @@ class SupConTrainer(BaseTrainer):
         ckpt_every = cfg["logging"].get("ckpt_every", 5)
 
         for epoch in range(self.start_epoch, epochs):
-            batch_sampler.set_epoch(epoch)  # keeps all DDP ranks' shard+shuffle in sync
             model.train()
             loss_meter = AverageMeter()
             t0 = time.time()
@@ -116,6 +111,7 @@ class SupConTrainer(BaseTrainer):
                         step=self.global_step,
                     )
 
+            self.flush_accumulation(optimizer)
             if is_main_process():
                 print(f"[supcon] epoch {epoch} done in {time.time() - t0:.1f}s, avg_loss={loss_meter.avg:.4f}")
             if (epoch + 1) % ckpt_every == 0 or epoch == epochs - 1:
