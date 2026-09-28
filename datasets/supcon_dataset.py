@@ -29,7 +29,7 @@ from typing import Dict, List, Tuple, Optional
 import torch
 from torch.utils.data import Sampler
 
-from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor
+from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor, probe_num_frames
 from datasets.multi_window import WindowPlan, expand_manifest, jitter_within_segment
 from transforms.spatial_transforms import VideoSpatialAugment
 from transforms.temporal_transforms import TemporalCrop
@@ -118,18 +118,28 @@ class SupConDataset(BaseVideoDataset):
 
     def __getitem__(self, index: int):
         path, video_id, label = self.samples[index]
-        raw_frames = self._load(path)
+
+        # Frame count is probed cheaply (metadata/header only), then exactly
+        # `clip_len` frames are decoded via seek & read (`_load_window`) —
+        # the source video's full length is never loaded into RAM just to
+        # keep one short crop of it, which is what makes very long
+        # (13,000-20,000+ frame) source videos safe to train on.
+        num_frames = probe_num_frames(self._resolve(path), self.frame_source)
         
-        if self._window_plans is not None:
+        if num_frames <= self.clip_len:
+            # Too short for a real seek-window; cheap enough to decode whole
+            # and let TemporalCrop's existing wrap-around handle it.
+            clip_np = self.crop(self._load(path))
+        elif self._window_plans is not None:
             plan = self._window_plans[index]
-            num_frames = raw_frames.shape[0]
-            if num_frames <= self.clip_len:
-                clip_np = self.crop(raw_frames)  # too-short-video fallback: existing wrap-around crop
-            else:
-                start = jitter_within_segment(plan.start, plan.jitter_radius, num_frames, self.clip_len)
-                clip_np = raw_frames[start : start + self.clip_len]
+            start = jitter_within_segment(plan.start, plan.jitter_radius, num_frames, self.clip_len)
+            clip_np = self._load_window(path, start, self.clip_len)
         else:
-            clip_np = self.crop(raw_frames)
+            # Same start distribution TemporalCrop itself uses: uniform
+            # random start when train=True, centered crop when train=False.
+            max_start = num_frames - self.clip_len
+            start = random.randint(0, max_start) if self.crop.random_start else max_start // 2
+            clip_np = self._load_window(path, start, self.clip_len)
         
         x_clip = self.spatial_aug(frames_to_float_tensor(clip_np))
         return (

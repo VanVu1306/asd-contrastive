@@ -108,7 +108,7 @@ Resume from a checkpoint: `--resume runs/<experiment_name>/ckpt_last.pth`.
 Override any config value from the CLI without editing YAML:
 
 ```bash
-python train.py --config configs/ssl_moco.yaml --opts optim.lr=0.01 optim.epochs=50
+python train.py --config configs/spi_periodicity.yaml --opts optim.lr=0.01 optim.epochs=50
 ```
 
 ### 2. Evaluation (`eval.py`)

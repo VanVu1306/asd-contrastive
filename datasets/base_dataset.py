@@ -120,6 +120,126 @@ def load_raw_frames(path: str, frame_source: str = "auto") -> np.ndarray:
     raise ValueError(f"Could not infer frame source for '{path}' — pass frame_source explicitly.")
 
 
+def _resolve_frame_source(path: str, frame_source: str) -> str:
+    if frame_source in ("video", "frames"):
+        return frame_source
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _VIDEO_EXTS:
+        return "video"
+    if ext == ".npy" or os.path.isdir(path):
+        return "frames"
+    raise ValueError(f"Could not infer frame source for '{path}' — pass frame_source explicitly.")
+
+
+def _seek_capture(capture, start: int) -> None:
+    """Seek an already-open cv2.VideoCapture to frame index `start`.
+
+    OpenCV's CAP_PROP_POS_FRAMES seek is not reliably frame-accurate for
+    every codec/container (some backends round to the nearest keyframe).
+    Rather than trusting it blindly, read the position back after seeking
+    and, if the backend under-shot, close the remaining gap with `grab()`
+    calls — `grab()` advances the decoder's read pointer without allocating
+    or returning a full decoded frame, so this stays cheap even when the
+    gap is a few hundred frames.
+    """
+    import cv2
+
+    if start <= 0:
+        return
+    capture.set(cv2.CAP_PROP_POS_FRAMES, float(start))
+    actual = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
+    if actual < start:
+        for _ in range(start - actual):
+            if not capture.grab():
+                break
+
+
+def _read_video_window(path: str, start: int, num_frames: int) -> np.ndarray:
+    """Seek directly to frame `start` and decode exactly `num_frames` frames.
+
+    This is the memory-safe counterpart to `_read_video_file`: peak memory
+    for one call is always O(num_frames), never O(video length) — the whole
+    point for videos that can run to 13,000-20,000+ frames. Uses OpenCV
+    (`cv2.VideoCapture`), the same decoder already used elsewhere in this
+    module, just with a seek instead of a sequential full-file read.
+    """
+    import cv2
+
+    capture = cv2.VideoCapture(path)
+    if not capture.isOpened():
+        raise OSError(f"Could not open video file: {path}")
+
+    frames = []
+    try:
+        _seek_capture(capture, start)
+        while len(frames) < num_frames:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    finally:
+        capture.release()
+
+    if not frames:
+        raise ValueError(f"Could not read any frames starting at frame {start} from '{path}'.")
+
+    window = np.stack(frames, axis=0)
+    if window.shape[0] < num_frames:
+        # Ran past EOF — only expected if a caller asks for a window that
+        # runs off the end of the video (shouldn't happen with windows
+        # planned via probe_num_frames, but stay defensive rather than
+        # returning a ragged clip that breaks every downstream shape
+        # assumption). Wrap around exactly like TemporalCrop's own
+        # too-short-clip handling.
+        reps = int(np.ceil(num_frames / window.shape[0]))
+        window = np.tile(window, (reps, 1, 1, 1))[:num_frames]
+    return window
+
+
+def _read_frame_window_from_folder(path: str, start: int, num_frames: int) -> np.ndarray:
+    """Same seek&read contract as `_read_video_window`, for `.npy` stacks and
+    frame-image folders — only the requested rows/files are ever decoded or
+    copied into RAM."""
+    if path.endswith(".npy"):
+        arr = np.load(path, mmap_mode="r")  # header-only; pixel data stays on disk until indexed
+        total = arr.shape[0]
+        idx = np.arange(start, start + num_frames) % total
+        window = np.asarray(arr[idx])  # copies only the requested rows into RAM
+        if window.dtype != np.uint8:
+            window = np.clip(window, 0, 255).astype(np.uint8)
+        return window
+
+    files = sorted(
+        f for f in os.listdir(path)
+        if os.path.splitext(f)[1].lower() in _IMAGE_EXTS
+    )
+    if not files:
+        raise FileNotFoundError(f"No frame images found under {path}")
+    total = len(files)
+    idx = np.arange(start, start + num_frames) % total
+    seq = _LazyFrameSequence(path, files)
+    return seq[idx]
+
+
+def load_frame_window(path: str, start: int, num_frames: int, frame_source: str = "auto") -> np.ndarray:
+    """Seek&read entry point: returns exactly `(num_frames, H, W, C)` uint8
+    starting at frame `start`, decoding only those frames regardless of how
+    long the source is. Use this (together with `probe_num_frames` to learn
+    the source's length up front) instead of `load_raw_frames` whenever a
+    dataset already knows *where* its window starts — this is what keeps
+    memory flat whether the source video is 200 or 20,000 frames long.
+
+    `start` is assumed in-bounds (`start + num_frames <= total_frames`),
+    which is guaranteed by the window-planning callers use
+    (`datasets/multi_window.py`, or a plain `random.randint(0, total -
+    num_frames)`); a defensive wrap-around still applies if it isn't.
+    """
+    resolved = _resolve_frame_source(path, frame_source)
+    if resolved == "video":
+        return _read_video_window(path, start, num_frames)
+    return _read_frame_window_from_folder(path, start, num_frames)
+
+
 def frames_to_float_tensor(frames: np.ndarray) -> torch.Tensor:
     """(T, H, W, C) uint8 -> (T, C, H, W) float32 in [0, 1], the layout every
     spatial transform in transforms/spatial_transforms.py expects."""
@@ -194,6 +314,12 @@ class BaseVideoDataset(Dataset):
 
     def _load(self, rel_or_abs_path: str) -> np.ndarray:
         return load_raw_frames(self._resolve(rel_or_abs_path), self.frame_source)
+
+    def _load_window(self, rel_or_abs_path: str, start: int, num_frames: int) -> np.ndarray:
+        """Seek&read version of `_load`: decodes only `num_frames` frames
+        starting at `start`, never the whole source. See `load_frame_window`
+        in this module for the memory-safety rationale."""
+        return load_frame_window(self._resolve(rel_or_abs_path), start, num_frames, self.frame_source)
 
     def __len__(self) -> int:
         return len(self.samples)

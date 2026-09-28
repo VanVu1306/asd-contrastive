@@ -18,12 +18,13 @@ query/key/queue roles.
 """
 from __future__ import annotations
 
+import random
 from typing import Tuple, List, Optional
 
 import numpy as np
 import torch
 
-from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor
+from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor, probe_num_frames
 from datasets.multi_window import WindowPlan, expand_manifest, jitter_within_segment
 from transforms.spatial_transforms import VideoSpatialAugment
 from transforms.temporal_transforms import FrameShuffle, SpeedWarp, TemporalCrop
@@ -97,20 +98,28 @@ class SSLDataset(BaseVideoDataset):
         `index` — either a fixed low-overlap slot (clips_per_video > 1) or a
         fresh uniformly-random crop (the original, default behavior)."""
         if self._window_plans is None:
-            raw_frames = self._load(self.samples[index])
-            return self.raw_crop(raw_frames)
-    
+            path = self.samples[index]
+            num_frames = probe_num_frames(self._resolve(path), self.frame_source)
+            if num_frames <= self.raw_clip_len:
+                # Short enough that decoding it whole is cheap; let
+                # TemporalCrop's existing wrap-around handle it.
+                return self.raw_crop(self._load(path))
+            # Same distribution TemporalCrop(random_start=True) itself uses:
+            # a uniform start in [0, num_frames - raw_clip_len].
+            start = random.randint(0, num_frames - self.raw_clip_len)
+            return self._load_window(path, start, self.raw_clip_len)
+
         plan = self._window_plans[index]
-        raw_frames = self._load(self.samples[plan.source_index])
-        num_frames = raw_frames.shape[0]
+        path = self.samples[plan.source_index]
+        num_frames = probe_num_frames(self._resolve(path), self.frame_source)
         if num_frames <= self.raw_clip_len:
             # Video shorter than the raw window itself — this is exactly the
             # case TemporalCrop's own wrap-around (frame-looping) logic
             # exists for, regardless of what multi_window planned.
-            return self.raw_crop(raw_frames)
+            return self.raw_crop(self._load(path))
     
         start = jitter_within_segment(plan.start, plan.jitter_radius, num_frames, self.raw_clip_len)
-        return raw_frames[start : start + self.raw_clip_len]
+        return self._load_window(path, start, self.raw_clip_len)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         raw_window = self._get_raw_window(index)  # (raw_clip_len, H, W, C)

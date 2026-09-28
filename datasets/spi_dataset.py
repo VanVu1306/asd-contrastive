@@ -43,7 +43,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
-from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor
+from datasets.base_dataset import BaseVideoDataset, frames_to_float_tensor, probe_num_frames
 from datasets.multi_window import WindowPlan, expand_manifest, jitter_within_segment
 from transforms.spatial_transforms import VideoSpatialAugment
 from transforms.temporal_transforms import SyntheticPeriodicityInjection, TemporalCrop
@@ -149,17 +149,21 @@ class SPIDataset(BaseVideoDataset):
         than imported so this file has zero coupling to ssl_dataset.py and
         can never affect it."""
         if self._window_plans is None:
-            raw_frames = self._load(self.samples[index])
-            return self.raw_crop(raw_frames)
+            path = self.samples[index]
+            num_frames = probe_num_frames(self._resolve(path), self.frame_source)
+            if num_frames <= self.raw_clip_len:
+                return self.raw_crop(self._load(path))
+            start = random.randint(0, num_frames - self.raw_clip_len)
+            return self._load_window(path, start, self.raw_clip_len)
 
         plan = self._window_plans[index]
-        raw_frames = self._load(self.samples[plan.source_index])
-        num_frames = raw_frames.shape[0]
+        path = self.samples[plan.source_index]
+        num_frames = probe_num_frames(self._resolve(path), self.frame_source)
         if num_frames <= self.raw_clip_len:
-            return self.raw_crop(raw_frames)
+            return self.raw_crop(self._load(path))
 
         start = jitter_within_segment(plan.start, plan.jitter_radius, num_frames, self.raw_clip_len)
-        return raw_frames[start : start + self.raw_clip_len]
+        return self._load_window(path, start, self.raw_clip_len)
 
     def _pick_phase_starts(self, total_len: int, L: int) -> Tuple[int, int]:
         """Two window-start positions favoring different repeat-unit offsets

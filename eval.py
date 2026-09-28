@@ -225,15 +225,20 @@ def run_anomaly_scoring(cfg, device: torch.device):
     all_scores, all_labels = [], []
 
     for i in range(len(test_ds)):
-        clips, starts, frame_labels, video_id = test_ds.get_video(i)
+        # get_meta only probes the video's frame count and plans window
+        # starts (no pixel decode); iter_batches then decodes and scores
+        # `batch_size` windows at a time via seek & read, so peak memory
+        # never depends on the video's total length or its total window
+        # count — this is the fix for eval.py's OOM on long test videos.
+        video_path, starts, frame_labels, video_id = test_ds.get_meta(i)
         n_frames = (frame_labels.shape[0] if frame_labels is not None
                     else int(starts[-1]) + cfg["data"]["clip_len"])
 
         window_scores = []
         batch_size = cfg["eval"]["batch_size"]
         with torch.no_grad():
-            for b in range(0, clips.shape[0], batch_size):
-                chunk = clips[b : b + batch_size].to(device)
+            for chunk, _batch_starts in test_ds.iter_batches(video_path, starts, batch_size):
+                chunk = chunk.to(device)
                 feats = backbone(chunk)
                 window_scores.append(scoring_head(feats).cpu().numpy())
         window_scores = np.concatenate(window_scores, axis=0)
